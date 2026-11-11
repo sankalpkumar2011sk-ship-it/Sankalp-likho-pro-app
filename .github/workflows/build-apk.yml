@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
   push:
     paths:
-      - 'Likho_Pro_Professional_Android_Project_DOWNLOAD.zip'
+      - '**.zip'
       - '.github/workflows/build-apk.yml'
 
 permissions:
@@ -13,58 +13,106 @@ permissions:
 
 jobs:
   build:
+    name: Build Android APK
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install Node.js
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: '22'
 
-      - name: Install Java
+      - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '21'
 
-      - name: Extract fixed project ZIP
+      - name: Find and extract project ZIP
+        shell: bash
         run: |
-          unzip -q Likho_Pro_Professional_Android_Project.zip -d unpacked
-          test -f unpacked/Likho_Pro_Professional_Android_Project/package.json
+          echo "Searching for project ZIP..."
+
+          ZIP_FILE=$(find "$GITHUB_WORKSPACE" \
+            -maxdepth 2 -type f -iname '*.zip' \
+            ! -path '*/.git/*' | head -n 1)
+
+          if [ -z "$ZIP_FILE" ]; then
+            echo "ERROR: No ZIP file found in repository."
+            ls -la "$GITHUB_WORKSPACE"
+            exit 1
+          fi
+
+          echo "Found ZIP: $ZIP_FILE"
+
+          mkdir -p "$RUNNER_TEMP/likho-project"
+          unzip -q "$ZIP_FILE" -d "$RUNNER_TEMP/likho-project"
+
+          PROJECT_DIR=$(find "$RUNNER_TEMP/likho-project" \
+            -type f -name package.json -print -quit | xargs dirname)
+
+          if [ -z "$PROJECT_DIR" ] || [ ! -f "$PROJECT_DIR/capacitor.config.json" ]; then
+            echo "ERROR: Valid Capacitor project not found."
+            find "$RUNNER_TEMP/likho-project" -maxdepth 4 -type f
+            exit 1
+          fi
+
+          if [ ! -f "$PROJECT_DIR/src/native-bridge.js" ] || \
+             [ ! -f "$PROJECT_DIR/scripts/patch-android.mjs" ]; then
+            echo "ERROR: Required project files are missing."
+            exit 1
+          fi
+
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "Project found successfully."
 
       - name: Install dependencies
-        working-directory: unpacked/Likho_Pro_Professional_Android_Project
-        run: npm install
+        run: |
+          cd "$PROJECT_DIR"
+          npm install --no-audit --no-fund
 
-      - name: Bundle native bridge
-        working-directory: unpacked/Likho_Pro_Professional_Android_Project
-        run: npm run build:bridge
+      - name: Build native bridge
+        run: |
+          cd "$PROJECT_DIR"
+          npm run build:bridge
 
       - name: Generate Android project
-        working-directory: unpacked/Likho_Pro_Professional_Android_Project
-        run: npx cap add android
+        run: |
+          cd "$PROJECT_DIR"
+          npx cap add android
 
-      - name: Patch Android integration
-        working-directory: unpacked/Likho_Pro_Professional_Android_Project
-        run: node scripts/patch-android.mjs
+      - name: Configure Android file integration
+        run: |
+          cd "$PROJECT_DIR"
+          node scripts/patch-android.mjs
 
       - name: Sync Capacitor
-        working-directory: unpacked/Likho_Pro_Professional_Android_Project
-        run: npx cap sync android
+        run: |
+          cd "$PROJECT_DIR"
+          npx cap sync android
 
       - name: Build debug APK
-        working-directory: unpacked/Likho_Pro_Professional_Android_Project/android
         run: |
+          cd "$PROJECT_DIR/android"
           chmod +x gradlew
           ./gradlew assembleDebug
+
+      - name: Verify APK
+        run: |
+          APK="$PROJECT_DIR/android/app/build/outputs/apk/debug/app-debug.apk"
+          if [ ! -f "$APK" ]; then
+            echo "ERROR: APK was not generated."
+            exit 1
+          fi
+          ls -lh "$APK"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: Likho-Pro-Android-APK
-          path: unpacked/Likho_Pro_Professional_Android_Project/android/app/build/outputs/apk/debug/app-debug.apk
+          path: ${{ env.PROJECT_DIR }}/android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
-          
+          retention-days: 14
