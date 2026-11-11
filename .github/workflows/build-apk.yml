@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
   push:
     paths:
-      - 'Likho_Pro_Professional_Android_Project.zip'
+      - 'Likho_Pro_Professional_Android_Project_DOWNLOAD.zip'
       - '.github/workflows/build-apk.yml'
 
 permissions:
